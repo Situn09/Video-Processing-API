@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy>=1.4
+asyncpg
+alembic
+pydantic
+python-multipart
+celery[redis]
+redis
+sqlalchemy-utils
+psycopg2-binary
