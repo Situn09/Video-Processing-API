@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Boolean
+from sqlalchemy import Column, Enum, Integer, String, DateTime, ForeignKey, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.base import Base
+from app.enums.overlay_kind import OverlayKind
 
 class Video(Base):
     __tablename__ = "videos"
@@ -9,7 +10,7 @@ class Video(Base):
     filename = Column(String, nullable=False)
     filepath = Column(String, nullable=False)
     size = Column(Integer)
-    duration = Column(Integer)  # seconds
+    duration = Column(Integer)
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
 
     versions = relationship("VideoVersion", back_populates="original")
@@ -17,33 +18,24 @@ class Video(Base):
     overlays = relationship("OverlayConfig", back_populates="video")
     watermark = relationship("Watermark", uselist=False, back_populates="video")
 
+
 class VideoVersion(Base):
     __tablename__ = "video_versions"
     id = Column(Integer, primary_key=True)
     video_id = Column(Integer, ForeignKey("videos.id"))
-    quality = Column(String)  # '1080p', '720p', '480p', 'original', 'trimmed'
+    quality = Column(String)
     filepath = Column(String, nullable=False)
     size = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     original = relationship("Video", back_populates="versions")
 
-class Job(Base):
-    __tablename__ = "jobs"
-    id = Column(String, primary_key=True)  # UUID or Celery task id
-    video_id = Column(Integer, ForeignKey("videos.id"), nullable=True)
-    task = Column(String)
-    status = Column(String, default="PENDING")
-    meta = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    video = relationship("Video", back_populates="jobs")
 
 class OverlayConfig(Base):
     __tablename__ = "overlays"
     id = Column(Integer, primary_key=True)
     video_id = Column(Integer, ForeignKey("videos.id"))
-    kind = Column(String)  # text/image/video
+    kind = Column(Enum(OverlayKind), nullable=False)  # text/image/video
     params = Column(JSON)  # position, start, end, text, font, etc.
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
