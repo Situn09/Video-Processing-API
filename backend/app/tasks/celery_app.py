@@ -2,6 +2,7 @@ from celery import Celery
 from kombu import Queue
 from app.core.config import settings
 
+
 celery = Celery(
     "worker",
     broker=settings.CELERY_BROKER_URL,

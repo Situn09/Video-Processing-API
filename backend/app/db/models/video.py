@@ -18,6 +18,16 @@ class Video(Base):
     overlays = relationship("OverlayConfig", back_populates="video")
     watermark = relationship("Watermark", uselist=False, back_populates="video")
 
+    # === Self-referencing relationship for trimmed videos ===
+    trimmed_from_id = Column(Integer, ForeignKey("videos.id"), nullable=True)
+    trimmed_videos = relationship(
+        "Video",
+        backref="original_video",
+        remote_side=[id],
+        cascade="all, delete-orphan",
+        single_parent=True, 
+    )
+
 
 class VideoVersion(Base):
     __tablename__ = "video_versions"

@@ -10,3 +10,4 @@ redis
 sqlalchemy-utils
 psycopg2-binary
 pydantic-settings
+aiofiles
