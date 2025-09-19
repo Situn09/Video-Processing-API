@@ -104,6 +104,76 @@ class VideoRepository:
         except SQLAlchemyError as e:
             logger.error(f"Error fetching video {video_id}: {e}", exc_info=True)
             return None
+    
+    # 1️⃣ Get encodings only (VideoVersion table)
+    def get_video_versions(self, video_id: int) -> List[VideoVersion]:
+        """Fetch only VideoVersion encodings for a video."""
+        try:
+            res = self.db.execute(
+                select(VideoVersion).where(VideoVersion.video_id == video_id)
+            )
+            return res.scalars().all()
+        except SQLAlchemyError as e:
+            logger.error(f"Error fetching video versions for {video_id}: {e}", exc_info=True)
+            return []
+
+    # 2️⃣ Get trimmed videos only (Video table self-reference)
+    def get_trimmed_videos(self, video_id: int) -> List[Video]:
+        """Fetch only trimmed videos of a given video."""
+        try:
+            res = self.db.execute(
+                select(Video).where(Video.trimmed_from_id == video_id)
+            )
+            return res.scalars().all()
+        except SQLAlchemyError as e:
+            logger.error(f"Error fetching trimmed videos for {video_id}: {e}", exc_info=True)
+            return []
+
+    # 3️⃣ Get everything: original video + encodings + trims (recursively)
+    def get_all_versions(self, video_id: int) -> List[dict]:
+        """
+        Fetch:
+          - Original video
+          - Its VideoVersion encodings
+          - Its trimmed videos (recursively, with their encodings)
+        Returns a flat list of dicts for easy API use.
+        """
+        def collect(video: Video, collected: List[dict]):
+            if not video:
+                return
+            collected.append({
+                "type": "video",
+                "id": video.id,
+                "filename": video.filename,
+                "filepath": video.filepath,
+            })
+            for v in video.versions:
+                collected.append({
+                    "type": "video_version",
+                    "id": v.id,
+                    "quality": v.quality,
+                    "filepath": v.filepath,
+                })
+            for trimmed in video.trimmed_videos:
+                collect(trimmed, collected)
+
+        try:
+            res = self.db.execute(
+                select(Video)
+                .options(
+                    joinedload(Video.versions),
+                    joinedload(Video.trimmed_videos).joinedload(Video.versions),
+                )
+                .where(Video.id == video_id)
+            )
+            video = res.scalars().first()
+
+            collected: List[dict] = []
+            collect(video, collected)
+            return collected
+        except SQLAlchemyError as e:
+            logger.error(f"Error fetching all versions for video {video_id}: {e}", exc_info=True)
+            return []
 
     def create(
         self,

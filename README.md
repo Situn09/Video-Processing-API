@@ -9,3 +9,15 @@
 ## Quick start (docker)
 
 1. Build & run:
+
+backend command
+
+```
+uvicorn app.main:app --reload
+```
+
+redis command
+
+```
+celery -A app.tasks.celery_app.celery worker -l info -Q video_jobs --pool=solo
+```

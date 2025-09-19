@@ -3,6 +3,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 from app.enums.overlay_kind import OverlayKind
+from app.enums.video_quality import VideoQuality
 
 class Video(Base):
     __tablename__ = "videos"
@@ -13,8 +14,8 @@ class Video(Base):
     duration = Column(Integer)
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
 
-    versions = relationship("VideoVersion", back_populates="original")
-    jobs = relationship("Job", back_populates="video")
+    versions = relationship("VideoVersion", back_populates="original",cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="video",cascade="all, delete-orphan")
     overlays = relationship("OverlayConfig", back_populates="video")
     watermark = relationship("Watermark", uselist=False, back_populates="video")
 
@@ -32,8 +33,8 @@ class Video(Base):
 class VideoVersion(Base):
     __tablename__ = "video_versions"
     id = Column(Integer, primary_key=True)
-    video_id = Column(Integer, ForeignKey("videos.id"))
-    quality = Column(String)
+    video_id = Column(Integer, ForeignKey("videos.id",ondelete="CASCADE"))
+    quality = Column(Enum(VideoQuality, values_callable=lambda obj: [e.value for e in obj]))  # e.g., 1080p, 720p
     filepath = Column(String, nullable=False)
     size = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -44,7 +45,7 @@ class VideoVersion(Base):
 class OverlayConfig(Base):
     __tablename__ = "overlays"
     id = Column(Integer, primary_key=True)
-    video_id = Column(Integer, ForeignKey("videos.id"))
+    video_id = Column(Integer, ForeignKey("videos.id",ondelete="CASCADE"))
     kind = Column(Enum(OverlayKind), nullable=False)  # text/image/video
     params = Column(JSON)  # position, start, end, text, font, etc.
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -54,7 +55,7 @@ class OverlayConfig(Base):
 class Watermark(Base):
     __tablename__ = "watermarks"
     id = Column(Integer, primary_key=True)
-    video_id = Column(Integer, ForeignKey("videos.id"))
+    video_id = Column(Integer, ForeignKey("videos.id",ondelete="CASCADE"))
     filepath = Column(String, nullable=False)
     position = Column(String, default="10:10")  # x:y or other convention
     created_at = Column(DateTime(timezone=True), server_default=func.now())

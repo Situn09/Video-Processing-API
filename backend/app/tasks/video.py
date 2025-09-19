@@ -275,7 +275,7 @@ def trim_video_task(self, video_id: int, start: float, end: float, job_id: str):
         # 2. Define trimmed file path
         base, ext = os.path.splitext(video.filepath)
         trimmed_filepath = f"{base}_trimmed{ext}"
-
+        logger.info(f"Trimming video {video.filepath} from {start} to {end}, saving to {trimmed_filepath}")
         # 3. Trim video using ffmpeg
         video_service.trim_video_ffmpeg(
             input_path=video.filepath,
@@ -293,7 +293,7 @@ def trim_video_task(self, video_id: int, start: float, end: float, job_id: str):
             filepath=trimmed_filepath,
             size=size,
             duration=duration,
-            trim_of_id=video.id
+            trimmed_from_id=video.id
         )
         db.commit()
 
@@ -304,8 +304,9 @@ def trim_video_task(self, video_id: int, start: float, end: float, job_id: str):
             meta={"trimmed_video_id": trimmed_video.id, "filepath": trimmed_filepath}
         )
         db.commit()
-
+        logger.info(f"Trim job {job_id} completed successfully.")
     except Exception as e:
+        logger.error(f"Error trimming video: {e}", exc_info=True)
         j_repo.update_status(
             job_id=job_id,
             status=JobStatus.FAILED.value,
@@ -360,7 +361,7 @@ def generate_versions_task(self, video_id: int, job_id: str):
     db = SessionLocal()
     v_repo = VideoRepository(db)
     j_repo = JobRepository(db)
-
+    logger.info(f"Starting version generation task for video_id: {video_id}, job_id: {job_id}")
     try:
         video = v_repo.get_video(video_id)
         if not video:
@@ -386,8 +387,9 @@ def generate_versions_task(self, video_id: int, job_id: str):
             meta={"versions": [v["quality"] for v in versions]}
         )
         db.commit()
-
+        logger.info(f"Version generation job {job_id} completed successfully.")
     except Exception as e:
+        logger.error(f"Error generating video versions: {e}", exc_info=True)
         j_repo.update_status(
             job_id=job_id,
             status=JobStatus.FAILED.value,

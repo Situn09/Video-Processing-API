@@ -86,6 +86,7 @@ from app.tasks.video import overlay_video_task, trim_video_task
 from app.enums.job_status import JobStatus
 from app.enums.task_type import TaskType
 from app.repositories.job_repo import JobRepository
+from app.log import logger
 
 router = APIRouter(prefix="/edit", tags=["Editing"])
 
@@ -94,6 +95,7 @@ router = APIRouter(prefix="/edit", tags=["Editing"])
 def trim_video(video_id: int, start: float, end: float, db: Session = Depends(get_db)):
     job_id = str(uuid.uuid4())
     job_repo = JobRepository(db)
+    logger.info(f"Creating trim job {job_id} for video {video_id} from {start} to {end}")
 
     # 1. Create job entry in DB (sync)
     job_repo.create(

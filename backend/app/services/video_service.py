@@ -3,12 +3,18 @@ import subprocess
 import os
 from typing import Dict, List, Tuple
 
-async def trim_video_ffmpeg(input_path: str, output_path: str, start: float, end: float):
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+from app.log import logger
+from app.db.session import SessionLocal
+from app.db.models.video import VideoVersion
+
+def trim_video_ffmpeg(input_path: str, output_path: str, start: float, end: float):
     """
-    Trim video using ffmpeg asynchronously.
+    Trim video using ffmpeg and log output.
     """
     cmd = [
-        "ffmpeg",
+        "ffmpeg",  # or full path to ffmpeg.exe
         "-y",
         "-i", input_path,
         "-ss", str(start),
@@ -16,9 +22,23 @@ async def trim_video_ffmpeg(input_path: str, output_path: str, start: float, end
         "-c", "copy",
         output_path
     ]
-    # run in thread to not block asyncio
-    import asyncio
-    await asyncio.to_thread(subprocess.run, cmd, check=True)
+    
+    logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        logger.info(f"FFmpeg stdout: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"FFmpeg stderr: {result.stderr}")
+        logger.info(f"Video trimmed successfully: {output_path}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg failed with return code {e.returncode}")
+        logger.error(f"FFmpeg stdout: {e.stdout}")
+        logger.error(f"FFmpeg stderr: {e.stderr}")
+        raise
+    except FileNotFoundError:
+        logger.error("FFmpeg executable not found. Make sure ffmpeg is installed and in PATH.")
+        raise
 
 def get_video_metadata(filepath: str) -> Tuple[int, float]:
     """
@@ -108,7 +128,7 @@ RESOLUTIONS = {
     "480p": "854x480",
 }
 
-async def generate_multi_quality_videos(input_path: str, output_dir: str) -> List[Dict]:
+def generate_multi_quality_videos(input_path: str, output_dir: str) -> List[Dict]:
     """
     Generate multiple resolutions of the input video using FFmpeg.
     Returns a list of dicts with filepath and resolution.
@@ -130,10 +150,24 @@ async def generate_multi_quality_videos(input_path: str, output_dir: str) -> Lis
             output_path
         ]
         # Run asynchronously in thread
-        tasks.append(asyncio.to_thread(subprocess.run, cmd, check=True))
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            logger.info(f"FFmpeg stdout: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"FFmpeg stderr: {result.stderr}")
+            logger.info(f"Video trimmed successfully: {output_path}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg failed with return code {e.returncode}")
+            logger.error(f"FFmpeg stdout: {e.stdout}")
+            logger.error(f"FFmpeg stderr: {e.stderr}")
+            raise
+        except FileNotFoundError:
+            logger.error("FFmpeg executable not found. Make sure ffmpeg is installed and in PATH.")
+            raise
+        # tasks.append(asyncio.to_thread(subprocess.run, cmd, check=True))
     
     # Wait for all tasks
-    await asyncio.gather(*tasks)
+    # await asyncio.gather(*tasks)
 
     # Collect results
     results = []
@@ -142,3 +176,24 @@ async def generate_multi_quality_videos(input_path: str, output_dir: str) -> Lis
         size = os.path.getsize(output_path)
         results.append({"quality": quality, "filepath": output_path, "size": size})
     return results
+
+
+def get_version_file(video_id: int, quality: str) -> FileResponse:
+    """
+    Return the requested video version file if it exists.
+    """
+    db = SessionLocal()
+    version = (
+        db.query(VideoVersion)
+        .filter(VideoVersion.video_id == video_id, VideoVersion.quality == quality)
+        .first()
+    )
+
+    if not version:
+        raise HTTPException(status_code=404, detail="Video version not found")
+
+    return FileResponse(
+        path=version.filepath,
+        filename=f"{quality}_{video_id}.mp4",
+        media_type="video/mp4"
+    )
