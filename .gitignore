@@ -5,3 +5,4 @@ test/
 static/
 logs/
 test*.*
+.venv_old

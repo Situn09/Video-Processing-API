@@ -116,11 +116,6 @@ async def apply_overlays_and_watermark(
     # Run FFmpeg asynchronously
     await asyncio.to_thread(subprocess.run, cmd, check=True)
 
-# app/services/video_service.py
-import asyncio
-import subprocess
-import os
-from typing import List, Tuple, Dict
 
 RESOLUTIONS = {
     "1080p": "1920x1080",
