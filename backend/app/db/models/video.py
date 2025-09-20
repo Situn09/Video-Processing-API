@@ -17,7 +17,7 @@ class Video(Base):
     versions = relationship("VideoVersion", back_populates="original",cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="video",cascade="all, delete-orphan")
     overlays = relationship("OverlayConfig", back_populates="video")
-    watermark = relationship("Watermark", uselist=False, back_populates="video")
+    # watermark = relationship("Watermark", uselist=False, back_populates="video")
 
     # === Self-referencing relationship for trimmed videos ===
     trimmed_from_id = Column(Integer, ForeignKey("videos.id"), nullable=True)
@@ -52,12 +52,12 @@ class OverlayConfig(Base):
 
     video = relationship("Video", back_populates="overlays")
 
-class Watermark(Base):
-    __tablename__ = "watermarks"
-    id = Column(Integer, primary_key=True)
-    video_id = Column(Integer, ForeignKey("videos.id",ondelete="CASCADE"))
-    filepath = Column(String, nullable=False)
-    position = Column(String, default="10:10")  # x:y or other convention
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+# class Watermark(Base):
+#     __tablename__ = "watermarks"
+#     id = Column(Integer, primary_key=True)
+#     video_id = Column(Integer, ForeignKey("videos.id",ondelete="CASCADE"))
+#     filepath = Column(String, nullable=False)
+#     position = Column(String, default="10:10")  # x:y or other convention
+#     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    video = relationship("Video", back_populates="watermark")
+#     video = relationship("Video", back_populates="watermark")

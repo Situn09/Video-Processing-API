@@ -1,4 +1,5 @@
 # app/services/video_service.py
+import json
 import subprocess
 import os
 from typing import Dict, List, Tuple
@@ -7,7 +8,10 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from app.log import logger
 from app.db.session import SessionLocal
-from app.db.models.video import VideoVersion
+from app.db.models.video import  VideoVersion
+from app.schemas.overlay import  OverlayParams, validate_overlay
+from app.enums.overlay_kind import OverlayKind
+from app.services.ffmpeg_utils import add_image_overlay, add_text_overlay, add_video_overlay
 
 def trim_video_ffmpeg(input_path: str, output_path: str, start: float, end: float):
     """
@@ -58,63 +62,6 @@ def get_video_metadata(filepath: str) -> Tuple[int, float]:
     data = json.loads(result.stdout)
     duration = float(data["format"]["duration"])
     return size, duration
-
-
-
-async def apply_overlays_and_watermark(
-    input_path: str,
-    output_path: str,
-    overlays: List[Dict],
-    watermark: Dict | None
-):
-    """
-    Apply text/image/video overlays and optional watermark using FFmpeg.
-    """
-    # Build filter_complex commands
-    filters = []
-
-    for idx, ov in enumerate(overlays):
-        kind = ov.get("kind")
-        params = ov.get("params", {})
-        start = params.get("start", 0)
-        end = params.get("end", 10)
-        pos = params.get("position", "10:10")
-
-        if kind == "text":
-            text = params.get("text", "")
-            fontfile = params.get("fontfile", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-            filters.append(
-                f"drawtext=text='{text}':x={pos.split(':')[0]}:y={pos.split(':')[1]}:enable='between(t,{start},{end})':fontfile={fontfile}:fontsize=24:fontcolor=white"
-            )
-        elif kind == "image":
-            img_path = params.get("path")
-            filters.append(f"overlay={pos}:enable='between(t,{start},{end})':shortest=1")
-        elif kind == "video":
-            # assuming overlay video input added separately
-            overlay_vid = params.get("path")
-            filters.append(f"[1:v] overlay={pos}:enable='between(t,{start},{end})'")
-
-    # Add watermark
-    if watermark:
-        wm_path = watermark.get("filepath")
-        wm_pos = watermark.get("position", "10:10")
-        filters.append(f"movie={wm_path}[wm];[0:v][wm] overlay={wm_pos}")
-
-    filter_complex = ",".join(filters) if filters else None
-
-    # Build ffmpeg command
-    cmd = ["ffmpeg", "-y", "-i", input_path]
-
-    # For overlay videos, add additional inputs
-    for ov in overlays:
-        if ov.get("kind") == "video":
-            cmd.extend(["-i", ov.get("params", {}).get("path")])
-
-    cmd.extend(["-filter_complex", filter_complex] if filter_complex else [])
-    cmd.append(output_path)
-
-    # Run FFmpeg asynchronously
-    await asyncio.to_thread(subprocess.run, cmd, check=True)
 
 
 RESOLUTIONS = {
@@ -192,3 +139,104 @@ def get_version_file(video_id: int, quality: str) -> FileResponse:
         filename=f"{quality}_{video_id}.mp4",
         media_type="video/mp4"
     )
+
+def get_video_aspect(video_path):
+    """Return aspect ratio (width/height) of video using ffprobe"""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "json",
+        video_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    info = json.loads(result.stdout)
+    width = info["streams"][0]["width"]
+    height = info["streams"][0]["height"]
+    return width / height
+
+
+
+def add_image_watermark(video_path:str, watermark_path:str, position="top-right"):
+    """
+    Add a PNG watermark to a video with dynamic scaling and positioning.
+
+    position: "top-left", "top-right", "bottom-left", "bottom-right"
+    scale_ratio: proportion of video width (0.3 = 30%, 0.5 = 50%)
+    """
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    if not os.path.exists(watermark_path):
+        raise FileNotFoundError(f"Watermark not found: {watermark_path}")
+    try:
+        # Decide scale ratio dynamically
+        logger.info(f"Calculating aspect ratio for {video_path}")
+        aspect_ratio = get_video_aspect(video_path)
+        if aspect_ratio >= 1:  # Landscape (width >= height)
+            scale_ratio = 0.4
+        else:  # Portrait / reel format
+            scale_ratio = 0.6
+
+        pos_map = {
+            "top-left": "10:10",
+            "top-right": "main_w-overlay_w-10:10",
+            "bottom-left": "10:main_h-overlay_h-10",
+            "bottom-right": "main_w-overlay_w-10:main_h-overlay_h-10"
+        }
+
+        if position not in pos_map:
+            raise ValueError(f"Invalid position '{position}', choose from {list(pos_map.keys())}")
+
+        temp_output = os.path.splitext(video_path)[0] + "_watermarked.mp4"
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", watermark_path,
+            "-filter_complex",
+            "[1:v]scale=-1:-1[wm_orig];"
+            f"[wm_orig][0:v]scale2ref=w='min(iw,main_w*{scale_ratio})':h='min(ih,main_h*{scale_ratio})'[wm][base];"
+            f"[base][wm]overlay={pos_map[position]}",
+            "-c:a", "copy",
+            temp_output
+        ]
+
+        subprocess.run(ffmpeg_cmd, check=True)
+        os.replace(temp_output, video_path)  # Overwrite original
+        print(f"✅ Watermarked video saved to {video_path}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ FFmpeg error: {e.stderr}",exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error adding watermark: {e}",exc_info=True)
+        raise
+
+
+def apply_overlays(kind: OverlayKind, overlay_params: OverlayParams, input_video_path: str, overlay_asset_path: str):
+    """
+    Validate -> save OverlayConfig row -> schedule background ffmpeg processing (or run sync)
+    """
+
+    try:
+        if kind == OverlayKind.TEXT:
+            add_text_overlay(str(input_video_path), 
+                                text=overlay_params.text or "Sample Text",
+                                position=overlay_params.position,
+                                start=overlay_params.start_time,
+                                end=overlay_params.end_time,
+                                )
+        elif kind == OverlayKind.IMAGE:
+            add_image_overlay(str(input_video_path), str(overlay_asset_path),
+                                position=overlay_params.position,
+                                start=overlay_params.start_time,
+                                end=overlay_params.end_time)
+        elif kind == OverlayKind.VIDEO:
+            add_video_overlay(str(input_video_path), str(overlay_asset_path),
+                                position=overlay_params.position,
+                                start=overlay_params.start_time,
+                                end=overlay_params.end_time,)
+        # here you may want to create a VideoVersion entry that points to this output_path
+        # or do something like move it to final storage / create DB row
+        # e.g., create VideoVersion(...) and save
+    except Exception as exc:
+        # TODO: update overlay row with error or logging
+        logger.error(f"Overlay job failed:{exc}", exc_info=True)

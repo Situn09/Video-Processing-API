@@ -1,42 +1,144 @@
+# app/services/ffmpeg_utils.py
+import shlex
 import subprocess
 from pathlib import Path
-from app.core.config import settings
-import shlex
+from typing import Optional
+import tempfile
+import os
 
-def run_cmd(cmd):
-    print("FFMPEG CMD:", cmd)
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"Command failed: {res.stderr}\n{res.stdout}")
-    return res.stdout
+def _pos_to_xy(position: str, overlay_w: int = 0, overlay_h: int = 0):
+    """
+    Convert simple position keywords to x,y expressions for ffmpeg overlay/drawtext.
+    overlay_w/h used for offsets when calculating right/bottom.
+    """
+    pos = position.lower() if position else "bottom-right"
+    if ":" in pos:
+        # assume "x:y" raw expressions
+        x, y = pos.split(":", 1)
+        return x, y
+    if pos in ("top-left", "tl"):
+        return "10", "10"
+    if pos in ("top-right", "tr"):
+        return f"main_w - {overlay_w} - 10", "10"
+    if pos in ("bottom-left", "bl"):
+        return "10", f"main_h - {overlay_h} - 10"
+    if pos in ("bottom-right", "br"):
+        return f"main_w - {overlay_w} - 10", f"main_h - {overlay_h} - 10"
+    if pos in ("center", "c"):
+        return f"(main_w - {overlay_w})/2", f"(main_h - {overlay_h})/2"
+    # default
+    return "10", f"main_h - {overlay_h} - 10"
 
-def trim_video(input_path: str, output_path: str, start: float, end: float):
-    duration = end - start
-    # -ss before -i is fast seek, -t controls duration
-    cmd = f'ffmpeg -y -ss {start} -i {shlex.quote(input_path)} -t {duration} -c:v libx264 -c:a aac {shlex.quote(output_path)}'
-    run_cmd(cmd)
-    return output_path
+def run_ffmpeg(args: list):
+    """
+    Run FFmpeg command (list form). Raise CalledProcessError on failure.
+    """
+    completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if completed.returncode != 0:
+        raise subprocess.CalledProcessError(
+            returncode=completed.returncode,
+            cmd=args,
+            output=completed.stdout,
+            stderr=completed.stderr
+        )
+    return completed
 
-def add_watermark(input_path: str, watermark_path: str, position="10:10", output_path=None):
-    if output_path is None:
-        output_path = str(Path(input_path).with_name(Path(input_path).stem + "_wm.mp4"))
-    # overlay at top-left with padding x:y handled by overlay filter (use overlay=X:Y)
-    # position is "x:y"
-    cmd = f'ffmpeg -y -i {shlex.quote(input_path)} -i {shlex.quote(watermark_path)} -filter_complex "overlay={position}" -c:a copy {shlex.quote(output_path)}'
-    run_cmd(cmd)
-    return output_path
+def add_text_overlay(input_path: str,  text: str,
+                     position: str = "bottom-right",
+                     start: Optional[float] = 0.0,
+                     end: Optional[float] = None):
+    """
+    Add drawtext overlay between start and end seconds.
+    """
+    # prepare drawtext options
+    # ensure proper escaping of text
+    safe_text = text.replace(":", r"\:").replace("'", r"\'")
+    x_expr, y_expr = _pos_to_xy(position, overlay_w=0, overlay_h=0)
+    enable = f"between(t,{start},{end})" if end is not None else f"gte(t,{start})"
 
-def add_text_overlay(input_path: str, text: str, fontfile: str, x="(w-text_w)/2", y="(h-text_h)/2", start=0, end=None, fontsize=48, output_path=None):
-    if output_path is None:
-        output_path = str(Path(input_path).with_name(Path(input_path).stem + "_text.mp4"))
-    drawtext = f"drawtext=fontfile={fontfile}:text='{text}':x={x}:y={y}:fontsize={fontsize}:enable='between(t,{start},{end if end is not None else 99999})'"
-    cmd = f'ffmpeg -y -i {shlex.quote(input_path)} -vf "{drawtext}" -c:a copy {shlex.quote(output_path)}'
-    run_cmd(cmd)
-    return output_path
+    drawtext_parts = [
+        f"text='{safe_text}'",
+        # f"fontsize={fontsize}",
+        # f"fontcolor={fontcolor}",
+        f"x={x_expr}",
+        f"y={y_expr}",
+        f"enable='{enable}'"
+    ]
+    drawtext = ",".join([p for p in drawtext_parts if p])
+    temp_path = input_path + "_text_overlay_temp.mp4"
+    args = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-vf", drawtext,
+        "-c:a", "copy",
+        str(temp_path)
+    ]
+    result = run_ffmpeg(args)
 
-def transcode_quality(input_path: str, output_path: str, resolution: str, bitrate: str = None):
-    # resolution examples: 1920x1080, 1280x720, 854x480
-    br = f"-b:v {bitrate}" if bitrate else ""
-    cmd = f'ffmpeg -y -i {shlex.quote(input_path)} -vf scale={resolution} -c:v libx264 {br} -preset veryfast -c:a aac -b:a 128k {shlex.quote(output_path)}'
-    run_cmd(cmd)
-    return output_path
+    # Replace original file with new file
+    os.replace(temp_path, input_path)
+
+    return 
+
+def add_image_overlay(input_path: str, overlay_asset_path: str,
+                      position: str = "top-right",
+                      start: Optional[float] = 0.0,
+                      end: Optional[float] = None,):
+    """
+    Overlay an image on video for time range [start,end). If end is None, overlay till end.
+    Supports optional scaling and opacity.
+    """
+    enable = f"between(t,{start},{end})" if end is not None else f"gte(t,{start})"
+
+    # Build filter_complex
+    #  - load overlay, apply scale (if given) and optionally alpha with colorchannelmixer
+    ov_filters = []
+    # ensure overlay has alpha channel for opacity manipulation
+    # we will use format=rgba and then colorchannelmixer
+    ov_filters.append("format=rgba")
+
+    ov_filter_str = ",".join(ov_filters)
+    x_expr, y_expr = _pos_to_xy(position, overlay_w=0, overlay_h=0)
+
+    # filter_complex: [1]... [ov]; [0][ov]overlay=...
+    filter_complex = f"[1]{ov_filter_str}[ov];[0][ov]overlay=x={x_expr}:y={y_expr}:enable='{enable}'"
+    temp_path = input_path + "_text_overlay_temp.mp4"
+    args = [
+        "ffmpeg", "-y", "-i", str(input_path), "-i", str(overlay_asset_path),
+        "-filter_complex", filter_complex,
+        "-c:a", "copy",
+        str(temp_path)
+    ]
+    result = run_ffmpeg(args)
+    # Replace original file with new file
+    os.replace(temp_path, input_path)
+    return 
+
+def add_video_overlay(input_path: str, overlay_asset_path: str,
+                      position: str = "center",
+                      start: Optional[float] = 0.0,
+                      end: Optional[float] = None,):
+    """
+    Overlay a video (overlay_video) on top of input video between start and end.
+    overlay_video will loop or be cut depending on shortest settings — we set shortest=1 to stop when overlay ends
+    """
+    enable = f"between(t,{start},{end})" if end is not None else f"gte(t,{start})"
+    ov_filters = []
+    ov_filters.append("format=rgba")
+    ov_filter_str = ",".join(ov_filters)
+    x_expr, y_expr = _pos_to_xy(position, overlay_w=0, overlay_h=0)
+
+    # map inputs: 0 = main video, 1 = overlay video
+    # Use setpts to align overlay timing, use enable in overlay filter
+    # We will use -stream_loop -1 for overlay looping if shorter than main (optional)
+    filter_complex = f"[1]{ov_filter_str}[ov];[0][ov]overlay=x={x_expr}:y={y_expr}:enable='{enable}':shortest=1"
+    temp_path = input_path + "_text_overlay_temp.mp4"
+    args = [
+        "ffmpeg", "-y", "-i", str(input_path), "-i", str(overlay_asset_path),
+        "-filter_complex", filter_complex,
+        "-c:v", "libx264", "-c:a", "copy",
+        str(temp_path)
+    ]
+    result = run_ffmpeg(args)
+    # Replace original file with new file
+    os.replace(temp_path, input_path)
+    return 

@@ -1,4 +1,4 @@
-from .video import Video, VideoVersion, OverlayConfig, Watermark
+from .video import Video, VideoVersion, OverlayConfig
 from .job import Job
 
-__all__ = ["Video", "VideoVersion", "OverlayConfig", "Watermark", "Job"]
+__all__ = ["Video", "VideoVersion", "OverlayConfig", "Job"]

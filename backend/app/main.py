@@ -13,4 +13,4 @@ logger.info("Tables created successfully.")
 
 # 2️⃣ Create FastAPI app normally
 app = FastAPI(title=settings.PROJECT_NAME, debug=settings.DEBUG)
-app.include_router(v1_router, prefix="/api/v1") 
+app.include_router(v1_router, prefix="/api/v1")  

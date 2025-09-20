@@ -20,7 +20,4 @@ class TrimRequest(BaseModel):
     start: float
     end: float
 
-class OverlayRequest(BaseModel):
-    video_id: int
-    overlays: List[Dict]  # each overlay: {kind:"text"/"image"/"video", params:{start,end,x,y,...}}
-    watermark: Optional[Dict] = None
+

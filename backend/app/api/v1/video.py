@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.video import VideoOut
 from app.services import video_service, storage
-from app.tasks.video import generate_versions_task, process_upload_task
+from app.tasks.video import add_watermark_task, generate_versions_task, process_upload_task
 from app.enums.job_status import JobStatus
 from app.enums.task_type import TaskType
 from app.repositories.job_repo import JobRepository
@@ -100,3 +100,40 @@ def download_version(video_id: int, quality: str, db: Session = Depends(get_db))
     # except ValueError:
     #     raise HTTPException(status_code=400, detail=f"Invalid quality: {quality}")
     return video_service.get_version_file(video_id, quality)  # sync
+
+@router.post("/{video_id}/watermark")
+def add_watermark(video_id: int, watermark: UploadFile, db: Session = Depends(get_db)):
+    try:
+        logger.info(f"Received watermark file: {watermark.filename}, content_type: {watermark.content_type}")
+        
+        # Read bytes from UploadFile (sync read using file.file.read)
+        file_bytes = watermark.file.read()
+
+        if not file_bytes:
+            logger.error(f"Empty file uploaded: {watermark.filename}")
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+        
+        # 1. Save file (sync)
+        filepath = storage.save_upload(file_bytes, watermark.filename)
+
+        # 2. Create Job record immediately
+        job_id = str(uuid.uuid4())
+        job_repo = JobRepository(db)
+        job_repo.create(
+            job_id=job_id,
+            video_id=None,
+            task=TaskType.WATERMARK.value,
+            status=JobStatus.PENDING.value,
+            meta={}
+        )
+        db.commit()
+
+        # 3. Enqueue Celery task
+        add_watermark_task.apply_async(args=[video_id, filepath, job_id], task_id=job_id)
+
+        # 4. Return job_id immediately
+        return {"job_id": job_id, "video_id": video_id}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
